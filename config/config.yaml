@@ -1,0 +1,31 @@
+proxy:
+  port: 8080          # port that receives real traffic
+
+api:
+  port: 9000          # port for the management / registration API
+
+healthCheck:
+  intervalMs: 10000   # ping each server every 10 seconds
+  timeoutMs: 3000     # mark server down if no response in 3s
+  path: /health       # endpoint to ping on each backend
+
+# Mode A: statically defined tenants
+# Servers can also self-register via the API (Mode B)
+tenants:
+  # - domain: amazon.com
+  #   strategy: round-robin   # round-robin | least-connections | ip-hash
+  #   servers:
+  #     - url: http://localhost:3001
+  #     - url: http://localhost:3002
+  #     - url: http://localhost:3003
+
+  # - domain: flipkart.com
+  #   strategy: least-connections
+  #   servers:
+  #     - url: http://localhost:4001
+  #     - url: http://localhost:4002
+
+  # - domain: meesho.com
+  #   strategy: ip-hash
+  #   servers:
+  #     - url: http://localhost:5001

@@ -1,0 +1,16 @@
+{
+  "tenants": [
+    {
+      "domain": "localhost",
+      "strategy": "adaptive",
+      "servers": [
+        {
+          "url": "http://localhost:5000"
+        },
+        {
+          "url": "http://localhost:5001"
+        }
+      ]
+    }
+  ]
+}
