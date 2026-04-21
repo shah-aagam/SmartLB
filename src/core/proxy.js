@@ -46,12 +46,10 @@ proxy.on('error', (err, req, res) => {
   const server = req.__chosenServer || 'unknown'
   const host   = req.__host || 'unknown'
 
-  // Log the error clearly
   console.error(
     `[req:${reqId}] [proxy:error] ${req.method} ${req.url} → ${server} | ${err.code || err.message}`
   )
 
-  // Circuit breaker: network failure
   if (req.__chosenServer && req.__host) {
     console.log(
       `[req:${reqId}] [circuit] NETWORK FAILURE → ${server}`
@@ -60,7 +58,6 @@ proxy.on('error', (err, req, res) => {
     recordFailure(host, server)
   }
 
-  // Send fallback response (only if not already sent)
   if (!res.headersSent) {
     res.writeHead(502, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({

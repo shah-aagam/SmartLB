@@ -62,7 +62,7 @@ function adaptive(servers, req) {
   const C = 2                 // UCB exploration strength
   const MAX_CONN = 20         // capacity threshold
 
-  // 🔹 Step 0: random exploration
+  // Step 0: random exploration
   if (Math.random() < EPSILON) {
     const random = servers[Math.floor(Math.random() * servers.length)]
     console.log('[adaptive] RANDOM →', random.url)
@@ -82,7 +82,7 @@ function adaptive(servers, req) {
     return { server: s, count, p95, connections }
   })
 
-  // 🔹 Step 1: force explore unseen
+  //  Step 1: force explore unseen
   const unseen = stats.filter(s => s.count === 0)
   if (unseen.length > 0) {
     const chosen = unseen[Math.floor(Math.random() * unseen.length)]
@@ -92,7 +92,7 @@ function adaptive(servers, req) {
 
   const logN = Math.log(totalCount || 1)
 
-  // 🔹 Step 2: scoring
+  //  Step 2: scoring
   const scored = stats.map(s => {
     const exploitation = -s.p95
 
@@ -115,7 +115,7 @@ function adaptive(servers, req) {
     return { server: s.server, score }
   })
 
-  // 🔹 Step 3: softmax (stochastic routing)
+  //  Step 3: softmax (stochastic routing)
   const expScores = scored.map(s =>
     Math.exp(s.score / TEMPERATURE)
   )

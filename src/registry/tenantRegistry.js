@@ -1,160 +1,3 @@
-// const tenants = new Map()
-
-// function createServer(url) {
-//   return {
-//     url,
-//     healthy: true,
-//     draining: false,
-//     connections: 0,
-
-
-//     latencies: [],
-//     maxSamples: 50,
-//     avgResponseTime: Infinity,
-//     p95: Infinity,
-
-//     endpointStats: {},
-
-//     totalRequests: 0
-//   }
-// }
-
-
-// function updateStats(obj, elapsed) {
-//   obj.latencies.push(elapsed)
-
-//   if (obj.latencies.length > obj.maxSamples) {
-//     obj.latencies.shift()
-//   }
-
-//   const sum = obj.latencies.reduce((a, b) => a + b, 0)
-//   obj.avg = sum / obj.latencies.length
-
-//   const sorted = [...obj.latencies].sort((a, b) => a - b)
-//   const index = Math.floor(0.95 * sorted.length)
-//   obj.p95 = sorted[index]
-// }
-
-
-// export function recordResponseTime(domain, url, elapsed, method, path) {
-//   const tenant = tenants.get(domain)
-//   if (!tenant) return
-
-//   const server = tenant.servers.find(s => s.url === url)
-//   if (!server) return
-
-
-//   updateStats(server, elapsed)
-//   server.avgResponseTime = server.avg
-//   server.totalRequests++
-
-//   const key = `${method}:${path}`
-
-//   if (!server.endpointStats[key]) {
-//     server.endpointStats[key] = {
-//       latencies: [],
-//       maxSamples: 50,
-//       avg: Infinity,
-//       p95: Infinity,
-//       count: 0
-//     }
-//   }
-
-//   const stat = server.endpointStats[key]
-//   stat.count++
-
-//   updateStats(stat, elapsed)
-// }
-
-
-// export function incrementConnections(domain, url) {
-//   const tenant = tenants.get(domain)
-//   const server = tenant?.servers.find(s => s.url === url)
-//   if (server) server.connections++
-// }
-
-// export function decrementConnections(domain, url) {
-//   const tenant = tenants.get(domain)
-//   const server = tenant?.servers.find(s => s.url === url)
-//   if (!server || server.connections <= 0) return
-
-//   server.connections--
-
-//   if (server.draining && server.connections === 0) {
-//     tenant.servers = tenant.servers.filter(s => s.url !== url)
-//     console.log(`[registry] Drain complete → removed ${url}`)
-//   }
-// }
-
-
-// export function markServerHealth(domain, url, isHealthy) {
-//   const tenant = tenants.get(domain)
-//   const server = tenant?.servers.find(s => s.url === url)
-
-//   if (!server) return
-
-//   const prev = server.healthy
-
-//   if (prev !== isHealthy) {
-//     const status = isHealthy ? 'UP   ✓' : 'DOWN ✗'
-//     const tag    = prev === null ? '[first check]' : '[changed]'
-//     console.log(`[health] ${status}  ${url}  (${domain})  ${tag}`)
-//   }
-
-//   server.healthy = isHealthy
-// }
-
-
-// export function getAllTenants() {
-//   return Array.from(tenants.values())
-// }
-
-
-// export default {
-//   addTenant(domain, strategy) {
-//     if (!tenants.has(domain)) {
-//       tenants.set(domain, {
-//         domain,
-//         strategy,
-//         servers: [],
-//         rrIndex: 0,
-//         rules: []
-//       })
-//     }
-//   },
-
-//   registerServer(domain, url) {
-//     const tenant = tenants.get(domain)
-//     if (!tenant) return
-//     tenant.servers.push(createServer(url))
-//   },
-
-//   getTenant(domain) {
-//     return tenants.get(domain)
-//   },
-
-//   getRoutableServers(domain) {
-//     const tenant = tenants.get(domain)
-//     return tenant?.servers.filter(s => s.healthy && !s.draining) || []
-//   },
-
-//   getRules(domain) {
-//     return tenants.get(domain)?.rules || []
-//   },
-
-//   incrementConnections,
-//   decrementConnections,
-//   recordResponseTime,
-//   markServerHealth,
-//   getAllTenants
-// }
-
-
-
-/**
- * tenantRegistry.js (UPDATED WITH CIRCUIT BREAKER)
- */
-
 const tenants = new Map()
 
 const validStrategies = [
@@ -173,16 +16,14 @@ function createServer(url) {
     draining: false,
     connections: 0,
 
-    // ───────── CIRCUIT BREAKER ─────────
     circuit: {
-      state: 'CLOSED',     // CLOSED | OPEN | HALF
+      state: 'CLOSED',    
       failures: 0,
       lastFailureTime: 0
     },
     failureThreshold: 3,
     cooldownMs: 10000,
 
-    // ───────── STATS ─────────
     latencies: [],
     maxSamples: 50,
     avgResponseTime: Infinity,
@@ -193,7 +34,6 @@ function createServer(url) {
   }
 }
 
-// ─────────────────────────────────────────────
 
 function updateStats(obj, elapsed) {
   obj.latencies.push(elapsed)
@@ -240,9 +80,6 @@ export function recordSuccess(domain, url) {
   }
 }
 
-// ─────────────────────────────────────────────
-// 🔥 CIRCUIT FILTER
-// ─────────────────────────────────────────────
 
 function isCircuitAvailable(server) {
   if (server.circuit.state === 'OPEN') {
@@ -303,8 +140,6 @@ export function recordResponseTime(domain, url, elapsed, method, path) {
   updateStats(stat, elapsed)
 }
 
-// ─────────────────────────────────────────────
-
 export function incrementConnections(domain, url) {
   const tenant = tenants.get(domain)
   const server = tenant?.servers.find(s => s.url === url)
@@ -324,7 +159,6 @@ export function decrementConnections(domain, url) {
   }
 }
 
-// ─────────────────────────────────────────────
 
 export function markServerHealth(domain, url, isHealthy) {
   const tenant = tenants.get(domain)
@@ -343,15 +177,10 @@ export function markServerHealth(domain, url, isHealthy) {
   server.healthy = isHealthy
 }
 
-// ─────────────────────────────────────────────
-
 export function getAllTenants() {
   return Array.from(tenants.values())
 }
 
-// ─────────────────────────────────────────────
-// 🔥 UPDATED ROUTABLE FILTER (IMPORTANT)
-// ─────────────────────────────────────────────
 
 export default {
   addTenant(domain, strategy) {
@@ -382,7 +211,7 @@ export default {
     return tenant?.servers.filter(s =>
       s.healthy &&
       !s.draining &&
-      isCircuitAvailable(s)   // 🔥 NEW
+      isCircuitAvailable(s)  
     ) || []
   },
 
