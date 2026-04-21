@@ -1,147 +1,335 @@
+// const tenants = new Map()
+
+// function createServer(url) {
+//   return {
+//     url,
+//     healthy: true,
+//     draining: false,
+//     connections: 0,
+
+
+//     latencies: [],
+//     maxSamples: 50,
+//     avgResponseTime: Infinity,
+//     p95: Infinity,
+
+//     endpointStats: {},
+
+//     totalRequests: 0
+//   }
+// }
+
+
+// function updateStats(obj, elapsed) {
+//   obj.latencies.push(elapsed)
+
+//   if (obj.latencies.length > obj.maxSamples) {
+//     obj.latencies.shift()
+//   }
+
+//   const sum = obj.latencies.reduce((a, b) => a + b, 0)
+//   obj.avg = sum / obj.latencies.length
+
+//   const sorted = [...obj.latencies].sort((a, b) => a - b)
+//   const index = Math.floor(0.95 * sorted.length)
+//   obj.p95 = sorted[index]
+// }
+
+
+// export function recordResponseTime(domain, url, elapsed, method, path) {
+//   const tenant = tenants.get(domain)
+//   if (!tenant) return
+
+//   const server = tenant.servers.find(s => s.url === url)
+//   if (!server) return
+
+
+//   updateStats(server, elapsed)
+//   server.avgResponseTime = server.avg
+//   server.totalRequests++
+
+//   const key = `${method}:${path}`
+
+//   if (!server.endpointStats[key]) {
+//     server.endpointStats[key] = {
+//       latencies: [],
+//       maxSamples: 50,
+//       avg: Infinity,
+//       p95: Infinity,
+//       count: 0
+//     }
+//   }
+
+//   const stat = server.endpointStats[key]
+//   stat.count++
+
+//   updateStats(stat, elapsed)
+// }
+
+
+// export function incrementConnections(domain, url) {
+//   const tenant = tenants.get(domain)
+//   const server = tenant?.servers.find(s => s.url === url)
+//   if (server) server.connections++
+// }
+
+// export function decrementConnections(domain, url) {
+//   const tenant = tenants.get(domain)
+//   const server = tenant?.servers.find(s => s.url === url)
+//   if (!server || server.connections <= 0) return
+
+//   server.connections--
+
+//   if (server.draining && server.connections === 0) {
+//     tenant.servers = tenant.servers.filter(s => s.url !== url)
+//     console.log(`[registry] Drain complete → removed ${url}`)
+//   }
+// }
+
+
+// export function markServerHealth(domain, url, isHealthy) {
+//   const tenant = tenants.get(domain)
+//   const server = tenant?.servers.find(s => s.url === url)
+
+//   if (!server) return
+
+//   const prev = server.healthy
+
+//   if (prev !== isHealthy) {
+//     const status = isHealthy ? 'UP   ✓' : 'DOWN ✗'
+//     const tag    = prev === null ? '[first check]' : '[changed]'
+//     console.log(`[health] ${status}  ${url}  (${domain})  ${tag}`)
+//   }
+
+//   server.healthy = isHealthy
+// }
+
+
+// export function getAllTenants() {
+//   return Array.from(tenants.values())
+// }
+
+
+// export default {
+//   addTenant(domain, strategy) {
+//     if (!tenants.has(domain)) {
+//       tenants.set(domain, {
+//         domain,
+//         strategy,
+//         servers: [],
+//         rrIndex: 0,
+//         rules: []
+//       })
+//     }
+//   },
+
+//   registerServer(domain, url) {
+//     const tenant = tenants.get(domain)
+//     if (!tenant) return
+//     tenant.servers.push(createServer(url))
+//   },
+
+//   getTenant(domain) {
+//     return tenants.get(domain)
+//   },
+
+//   getRoutableServers(domain) {
+//     const tenant = tenants.get(domain)
+//     return tenant?.servers.filter(s => s.healthy && !s.draining) || []
+//   },
+
+//   getRules(domain) {
+//     return tenants.get(domain)?.rules || []
+//   },
+
+//   incrementConnections,
+//   decrementConnections,
+//   recordResponseTime,
+//   markServerHealth,
+//   getAllTenants
+// }
+
+
+
 /**
- * Single source of truth for all tenants and their server pools.
- *
- * Each server object shape:
- * {
- *   url:             string,
- *   healthy:         null | true | false,
- *   draining:        boolean,   // graceful shutdown — no new requests
- *   connections:     number,    // active right now
- *   responseTimes:   number[],  // rolling window of last 20 response times (ms)
- *   avgResponseTime: number,    // computed average — used by fastest-response
- *   totalRequests:   number,    // lifetime request count
- *   addedAt:         Date
- * }
+ * tenantRegistry.js (UPDATED WITH CIRCUIT BREAKER)
  */
 
-const registry = {}
+const tenants = new Map()
 
-const RESPONSE_WINDOW = 20 
+const validStrategies = [
+  'round-robin',
+  'least-connections',
+  'ip-hash',
+  'fastest-response',
+  'weighted-response',
+  'adaptive'
+]
 
-
-
-function addTenant(domain, strategy = 'round-robin') {
-  if (registry[domain]) return
-  registry[domain] = {
-    strategy,
-    rrIndex: 0,
-    servers: [],
-    rules: []    // routing rules for this tenant (path/header/method)
-  }
-  console.log(`[registry] Tenant added: ${domain} (strategy: ${strategy})`)
-}
-
-function getTenant(domain) {
-  return registry[domain] || null
-}
-
-function getAllTenants() {
-  return Object.entries(registry).map(([domain, data]) => ({
-    domain,
-    strategy: data.strategy,
-    servers:  data.servers,
-    rules:    data.rules
-  }))
-}
-
-function setStrategy(domain, strategy) {
-  if (!registry[domain]) return
-  registry[domain].strategy = strategy
-  console.log(`[registry] Strategy updated: ${domain} → ${strategy}`)
-}
-
-
-function registerServer(domain, url) {
-  if (!registry[domain]) addTenant(domain)
-
-  const tenant = registry[domain]
-  const exists = tenant.servers.find(s => s.url === url)
-
-  if (exists) {
-    if (exists.draining) {
-      exists.draining = false
-      console.log(`[registry] Server re-activated (was draining): ${url} → ${domain}`)
-    } else {
-      console.log(`[registry] Already registered: ${url} → ${domain}`)
-    }
-    return
-  }
-
-  tenant.servers.push({
+function createServer(url) {
+  return {
     url,
-    healthy:         null,   // null = not yet checked
-    draining:        false,
-    connections:     0,
-    responseTimes:   [],     // rolling window
-    avgResponseTime: Infinity, // Infinity so untested servers are last resort in fastest-response
-    totalRequests:   0,
-    endpointStats: {
-      // key: "GET:/products"
-      // value: { avg: number, samples: number }
-     },
-    addedAt:         new Date() 
-  }) 
+    healthy: true,
+    draining: false,
+    connections: 0,
 
-  console.log(`[registry] Server registered: ${url} → ${domain}`)
+    // ───────── CIRCUIT BREAKER ─────────
+    circuit: {
+      state: 'CLOSED',     // CLOSED | OPEN | HALF
+      failures: 0,
+      lastFailureTime: 0
+    },
+    failureThreshold: 3,
+    cooldownMs: 10000,
+
+    // ───────── STATS ─────────
+    latencies: [],
+    maxSamples: 50,
+    avgResponseTime: Infinity,
+    p95: Infinity,
+
+    endpointStats: {},
+    totalRequests: 0
+  }
 }
 
-function deregisterServer(domain, url) {
-  if (!registry[domain]) return
-  registry[domain].servers = registry[domain].servers.filter(s => s.url !== url)
-  console.log(`[registry] Server removed: ${url} from ${domain}`)
+// ─────────────────────────────────────────────
+
+function updateStats(obj, elapsed) {
+  obj.latencies.push(elapsed)
+
+  if (obj.latencies.length > obj.maxSamples) {
+    obj.latencies.shift()
+  }
+
+  const sum = obj.latencies.reduce((a, b) => a + b, 0)
+  obj.avg = sum / obj.latencies.length
+
+  const sorted = [...obj.latencies].sort((a, b) => a - b)
+  const index = Math.floor(0.95 * sorted.length)
+  obj.p95 = sorted[index]
 }
 
-function drainServer(domain, url) {
-  const server = registry[domain]?.servers.find(s => s.url === url)
-  if (!server) return false
-  server.draining = true
-  console.log(`[registry] Server draining: ${url} (${domain}) — waiting for ${server.connections} active connections`)
+
+export function recordFailure(domain, url) {
+  const tenant = tenants.get(domain)
+  const server = tenant?.servers.find(s => s.url === url)
+  if (!server) return
+
+  server.circuit.failures++
+  server.circuit.lastFailureTime = Date.now()
+
+  console.log(`[circuit] failure ${server.circuit.failures} → ${url}`)
+
+  if (server.circuit.failures >= server.failureThreshold) {
+    server.circuit.state = 'OPEN'
+    server.circuit.lastFailureTime = Date.now()
+    console.log(`[circuit] OPEN → ${url}`)
+  }
+}
+
+export function recordSuccess(domain, url) {
+  const tenant = tenants.get(domain)
+  const server = tenant?.servers.find(s => s.url === url)
+  if (!server) return
+
+  if (server.circuit.state === 'HALF') {
+    server.circuit.state = 'CLOSED'
+    server.circuit.failures = 0
+    console.log(`[circuit] CLOSED → ${url}`)
+  }
+}
+
+// ─────────────────────────────────────────────
+// 🔥 CIRCUIT FILTER
+// ─────────────────────────────────────────────
+
+function isCircuitAvailable(server) {
+  if (server.circuit.state === 'OPEN') {
+    const now = Date.now()
+
+    if (now - server.circuit.lastFailureTime > server.cooldownMs) {
+      server.circuit.state = 'HALF'
+      console.log(`[circuit] HALF-OPEN → ${server.url}`)
+      return true
+    }
+
+    return false
+  }
+
   return true
 }
 
-function getRoutableServers(domain) {
-  return registry[domain]?.servers.filter(
-    s => s.healthy !== false && !s.draining
-  ) ?? []
-}
+function setStrategy(domain, strategy) {
+  const tenant = tenants.get(domain)
+  if (!tenant) return false
 
-function getHealthyServers(domain) {
-  return getRoutableServers(domain)
-}
-
-
-function recordResponseTime(domain, url, timeMs, method, path) {
-  const server = registry[domain]?.servers.find(s => s.url === url)
-  if (!server) return
-
-  server.responseTimes.push(timeMs)
-
-  if (server.responseTimes.length > RESPONSE_WINDOW) {
-    server.responseTimes.shift()
+  if (!validStrategies.includes(strategy)) {
+    throw new Error(`Invalid strategy: ${strategy}`)
   }
 
-  const sum = server.responseTimes.reduce((a, b) => a + b, 0)
-  server.avgResponseTime = Math.round(sum / server.responseTimes.length)
+  tenant.strategy = strategy
+  return true
+}
+
+export function recordResponseTime(domain, url, elapsed, method, path) {
+  const tenant = tenants.get(domain)
+  if (!tenant) return
+
+  const server = tenant.servers.find(s => s.url === url)
+  if (!server) return
+
+  // GLOBAL
+  updateStats(server, elapsed)
+  server.avgResponseTime = server.avg
   server.totalRequests++
 
+  // ENDPOINT
   const key = `${method}:${path}`
 
   if (!server.endpointStats[key]) {
     server.endpointStats[key] = {
-      total: 0,
-      count: 0,
-      avg: Infinity
+      latencies: [],
+      maxSamples: 50,
+      avg: Infinity,
+      p95: Infinity,
+      count: 0
     }
   }
 
   const stat = server.endpointStats[key]
-  stat.total += timeMs
   stat.count++
-  stat.avg = Math.round(stat.total / stat.count)
+
+  updateStats(stat, elapsed)
 }
 
-function markServerHealth(domain, url, isHealthy) {
-  const server = registry[domain]?.servers.find(s => s.url === url)
+// ─────────────────────────────────────────────
+
+export function incrementConnections(domain, url) {
+  const tenant = tenants.get(domain)
+  const server = tenant?.servers.find(s => s.url === url)
+  if (server) server.connections++
+}
+
+export function decrementConnections(domain, url) {
+  const tenant = tenants.get(domain)
+  const server = tenant?.servers.find(s => s.url === url)
+  if (!server || server.connections <= 0) return
+
+  server.connections--
+
+  if (server.draining && server.connections === 0) {
+    tenant.servers = tenant.servers.filter(s => s.url !== url)
+    console.log(`[registry] Drain complete → removed ${url}`)
+  }
+}
+
+// ─────────────────────────────────────────────
+
+export function markServerHealth(domain, url, isHealthy) {
+  const tenant = tenants.get(domain)
+  const server = tenant?.servers.find(s => s.url === url)
+
   if (!server) return
 
   const prev = server.healthy
@@ -155,70 +343,57 @@ function markServerHealth(domain, url, isHealthy) {
   server.healthy = isHealthy
 }
 
+// ─────────────────────────────────────────────
 
-function incrementConnections(domain, url) {
-  const server = registry[domain]?.servers.find(s => s.url === url)
-  if (server) server.connections++
+export function getAllTenants() {
+  return Array.from(tenants.values())
 }
 
-function decrementConnections(domain, url) {
-  const server = registry[domain]?.servers.find(s => s.url === url)
-  if (!server || server.connections <= 0) return
-  server.connections--
+// ─────────────────────────────────────────────
+// 🔥 UPDATED ROUTABLE FILTER (IMPORTANT)
+// ─────────────────────────────────────────────
 
-  if (server.draining && server.connections === 0) {
-    console.log(`[registry] Drain complete, removing: ${url} from ${domain}`)
-    registry[domain].servers = registry[domain].servers.filter(s => s.url !== url)
-  }
-}
+export default {
+  addTenant(domain, strategy) {
+    if (!tenants.has(domain)) {
+      tenants.set(domain, {
+        domain,
+        strategy,
+        servers: [],
+        rrIndex: 0,
+        rules: []
+      })
+    }
+  },
 
+  registerServer(domain, url) {
+    const tenant = tenants.get(domain)
+    if (!tenant) return
+    tenant.servers.push(createServer(url))
+  },
 
+  getTenant(domain) {
+    return tenants.get(domain)
+  },
 
-function addRule(domain, rule) {
-  if (!registry[domain]) return
-  registry[domain].rules.push(rule)
-  console.log(`[registry] Rule added for ${domain}:`, rule)
-}
+  getRoutableServers(domain) {
+    const tenant = tenants.get(domain)
 
-function getRules(domain) {
-  return registry[domain]?.rules ?? []
-}
+    return tenant?.servers.filter(s =>
+      s.healthy &&
+      !s.draining &&
+      isCircuitAvailable(s)   // 🔥 NEW
+    ) || []
+  },
 
+  getRules(domain) {
+    return tenants.get(domain)?.rules || []
+  },
 
-const tenantRegistry = {
-  addTenant,
-  getTenant,
-  getAllTenants,
-  setStrategy,
-  registerServer,
-  deregisterServer,
-  drainServer,
-  getRoutableServers,
-  getHealthyServers,
-  recordResponseTime,
-  markServerHealth,
   incrementConnections,
   decrementConnections,
-  addRule,
-  getRules
-}
-
-export {
-  addTenant,
-  getTenant,
-  getAllTenants,
-  setStrategy,
-  registerServer,
-  deregisterServer,
-  drainServer,
-  getRoutableServers,
-  getHealthyServers,
   recordResponseTime,
   markServerHealth,
-  incrementConnections,
-  decrementConnections,
-  addRule,
-  getRules
+  getAllTenants,
+  setStrategy
 }
-
-export default tenantRegistry

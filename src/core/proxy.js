@@ -16,21 +16,9 @@ import httpProxy from 'http-proxy'
 import registry from '../registry/tenantRegistry.js'
 import { pickServer } from '../strategies/index.js'
 import { evaluateRules } from '../routing/rules.js'
+import { recordFailure, recordSuccess } from '../registry/tenantRegistry.js'
 
 let requestCounter = 0
-
-const proxy = httpProxy.createProxyServer({
-  changeOrigin: true,
-  timeout: 10000
-})
-
-proxy.on('error', (err, req, res) => {
-  console.error(`[proxy] Backend error: ${err.message}`)
-  if (!res.headersSent) {
-    res.writeHead(502, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'Bad Gateway', message: err.message }))
-  }
-})
 
 function normalizePath(url) {
   try {
@@ -48,12 +36,69 @@ function normalizePath(url) {
   }
 }
 
+const proxy = httpProxy.createProxyServer({
+  changeOrigin: true,
+  timeout: 10000
+})
+
+proxy.on('error', (err, req, res) => {
+  const reqId = req.reqId || 'unknown'
+  const server = req.__chosenServer || 'unknown'
+  const host   = req.__host || 'unknown'
+
+  // Log the error clearly
+  console.error(
+    `[req:${reqId}] [proxy:error] ${req.method} ${req.url} → ${server} | ${err.code || err.message}`
+  )
+
+  // Circuit breaker: network failure
+  if (req.__chosenServer && req.__host) {
+    console.log(
+      `[req:${reqId}] [circuit] NETWORK FAILURE → ${server}`
+    )
+
+    recordFailure(host, server)
+  }
+
+  // Send fallback response (only if not already sent)
+  if (!res.headersSent) {
+    res.writeHead(502, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      error: 'Bad Gateway',
+      type: 'NETWORK_ERROR',
+      message: err.message
+    }))
+  }
+})
+
+proxy.on('proxyRes', (proxyRes, req) => {
+  const reqId = req.reqId || 'unknown'
+  const server = req.__chosenServer
+  const host = req.__host
+
+  if (!server || !host) return
+
+  const status = proxyRes.statusCode
+
+  if (status >= 500) {
+    console.log(
+      `[req:${reqId}] [circuit] HTTP ${status} FAILURE → ${server}`
+    )
+    recordFailure(host, server)
+  } else {
+    console.log(
+      `[req:${reqId}] [circuit] SUCCESS (${status}) → ${server}`
+    )
+    recordSuccess(host, server)
+  }
+})
+
 
 export function handleRequest(req, res) {
   const reqId = ++requestCounter
   req.reqId = reqId
 
-  console.log(`\n----------- REQUEST ${reqId} -------------`)
+  console.log(`\n REQUEST ${reqId} `)
   console.log(`[req:${reqId}] Incoming → ${req.method} ${req.url}`)
 
   const host = (req.headers.host || '').split(':')[0].toLowerCase().trim()
@@ -96,11 +141,12 @@ export function handleRequest(req, res) {
 
   const chosen = pickServer(effectiveTenant, serverPool, clientIp , req)
 
-
   if (!chosen) {
     res.writeHead(503, { 'Content-Type': 'application/json' })
     return res.end(JSON.stringify({ error: 'No server available' }))
   }
+  req.__chosenServer = chosen.url
+  req.__host = host
 
 
   req.headers['x-forwarded-for']  = clientIp

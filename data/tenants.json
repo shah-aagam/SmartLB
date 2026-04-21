@@ -2,7 +2,7 @@
   "tenants": [
     {
       "domain": "localhost",
-      "strategy": "adaptive",
+      "strategy": "round-robin",
       "servers": [
         {
           "url": "http://localhost:5000"

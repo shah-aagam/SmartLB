@@ -65,24 +65,52 @@ router.post('/drain', (req, res) => {
   })
 })
 
+// router.get('/servers', (req, res) => {
+//   const tenants = registry.getAllTenants().map(tenant => ({
+//     domain:   tenant.domain,
+//     strategy: tenant.strategy,
+//     rules:    tenant.rules,
+//     servers:  tenant.servers.map(s => ({
+//       url:             s.url,
+//       healthy:         s.healthy,
+//       draining:        s.draining,
+//       connections:     s.connections,
+//       avgResponseTime: s.avgResponseTime === Infinity ? 'no data yet' : `${s.avgResponseTime}ms`,
+//       totalRequests:   s.totalRequests,
+//       sampleCount:     s.responseTimes?.length ?? 0 , 
+//       endpointStats: Object.entries(s.endpointStats || {}).map(([key, val]) => ({
+//         endpoint: key,
+//         avg: val.avg,
+//         count: val.count
+//       }))
+//     }))
+//   }))
+
+//   res.json({ tenants })
+// })
 router.get('/servers', (req, res) => {
   const tenants = registry.getAllTenants().map(tenant => ({
     domain:   tenant.domain,
     strategy: tenant.strategy,
     rules:    tenant.rules,
-    servers:  tenant.servers.map(s => ({
-      url:             s.url,
-      healthy:         s.healthy,
-      draining:        s.draining,
-      connections:     s.connections,
-      avgResponseTime: s.avgResponseTime === Infinity ? 'no data yet' : `${s.avgResponseTime}ms`,
-      totalRequests:   s.totalRequests,
-      sampleCount:     s.responseTimes?.length ?? 0 , 
-      endpointStats: Object.entries(s.endpointStats || {}).map(([key, val]) => ({
-        endpoint: key,
-        avg: val.avg,
-        count: val.count
-      }))
+
+    servers: tenant.servers.map(s => ({
+      url:         s.url,
+      healthy:     s.healthy,
+      draining:    s.draining,
+      connections: s.connections,
+
+      circuit: {
+        state: s.circuit?.state || 'CLOSED',
+        failures: s.circuit?.failures || 0
+      },
+
+      avgResponseTime: s.avgResponseTime,
+      p95: s.p95,
+
+      totalRequests: s.totalRequests,
+
+      endpointStats: s.endpointStats
     }))
   }))
 

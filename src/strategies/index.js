@@ -56,14 +56,16 @@ function adaptive(servers, req) {
   if (servers.length === 0) return null
 
   const key = `${req.method}:${req.normalizedPath}`
-  const C = 2
-  const TEMPERATURE = 70
-  const EPSILON = 0.05
 
-  // Random exploration safety
+  const EPSILON = 0.05        // random exploration
+  const TEMPERATURE = 120     // higher = more spread
+  const C = 2                 // UCB exploration strength
+  const MAX_CONN = 20         // capacity threshold
+
+  // 🔹 Step 0: random exploration
   if (Math.random() < EPSILON) {
     const random = servers[Math.floor(Math.random() * servers.length)]
-    console.log('[adaptive] RANDOM EXPLORE →', random.url)
+    console.log('[adaptive] RANDOM →', random.url)
     return random
   }
 
@@ -72,37 +74,52 @@ function adaptive(servers, req) {
   const stats = servers.map(s => {
     const stat = s.endpointStats?.[key]
     const count = stat?.count ?? 0
-    const avg   = stat?.avg ?? Infinity
+    const p95   = stat?.p95 ?? Infinity
     const connections = s.connections ?? 0
 
     totalCount += count
 
-    return { server: s, count, avg, connections }
+    return { server: s, count, p95, connections }
   })
 
-  // FORCE unseen
+  // 🔹 Step 1: force explore unseen
   const unseen = stats.filter(s => s.count === 0)
   if (unseen.length > 0) {
     const chosen = unseen[Math.floor(Math.random() * unseen.length)]
-    console.log('[adaptive] FORCED EXPLORE →', chosen.server.url)
+    console.log('[adaptive] FORCED →', chosen.server.url)
     return chosen.server
   }
 
-  const logN = Math.log(totalCount)
+  const logN = Math.log(totalCount || 1)
 
+  // 🔹 Step 2: scoring
   const scored = stats.map(s => {
-    const exploitation = -s.avg
-    const exploration  = C * Math.sqrt(logN / s.count)
-    const loadPenalty  = -0.7 * s.connections
+    const exploitation = -s.p95
 
-    let score = exploitation + exploration + loadPenalty
+    const exploration = C * Math.sqrt(logN / s.count)
 
+    const loadPenalty = -5 * s.connections
+
+    const overloadPenalty =
+      s.connections > MAX_CONN ? -100 : 0
+
+    let score =
+      exploitation +
+      exploration +
+      loadPenalty +
+      overloadPenalty
+
+    // clamp (avoid overflow)
     score = Math.max(-200, Math.min(200, score))
 
     return { server: s.server, score }
   })
 
-  const expScores = scored.map(s => Math.exp(s.score / TEMPERATURE))
+  // 🔹 Step 3: softmax (stochastic routing)
+  const expScores = scored.map(s =>
+    Math.exp(s.score / TEMPERATURE)
+  )
+
   const total = expScores.reduce((a, b) => a + b, 0)
 
   let rand = Math.random() * total
@@ -117,7 +134,6 @@ function adaptive(servers, req) {
 
   return scored[scored.length - 1].server
 }
-
 
 export function pickServer(tenant, servers, clientIp, req) {
   switch (tenant.strategy) {

@@ -29,7 +29,7 @@ import { loadTenants } from './src/registry/persistence.js'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// ── Step 1: Load config ───────────────────────────────────────────────────────
+// ── Step 1: Load config 
 const configPath = path.join(__dirname, 'config', 'config.yaml')
 
 if (!fs.existsSync(configPath)) {
@@ -43,7 +43,7 @@ const config = yaml.load(fs.readFileSync(configPath, 'utf8'))
 console.log('Load Balancer Starting...   \n')
 
 
-// ── Step 2: Load persisted tenants from data/tenants.json (Mode B) ────────────
+// Load persisted tenants from data/tenants.json (Mode B) 
 const persistedTenants = loadTenants()
 
 if (persistedTenants.length > 0) {
@@ -57,7 +57,7 @@ if (persistedTenants.length > 0) {
 }
 
 
-// ── Step 3: Seed registry from config (Mode A) ───────────────────────────────
+// Seed registry from config (Mode A) 
 if (config.tenants && config.tenants.length > 0) {
   console.log('\n[boot] Loading static tenants from config.yaml...')
   for (const tenant of config.tenants) {
@@ -69,10 +69,11 @@ if (config.tenants && config.tenants.length > 0) {
   console.log(`[boot] Loaded ${config.tenants.length} tenant(s) from config`)
 }
 
-// ── Step 4: Start health checker ─────────────────────────────────────────────
+
 startHealthChecks(config)
 
-// ── Step 5: Start proxy server on :8080 ──────────────────────────────────────
+
+// proxy server on :8080 
 const proxyServer = http.createServer(handleRequest)
 const PROXY_PORT = config.proxy.port || 8080
 
@@ -81,14 +82,13 @@ proxyServer.listen(PROXY_PORT, () => {
   console.log(`        Send requests here with the correct Host header`)
 })
 
-// ── Step 6: Start management API on :9000 ────────────────────────────────────
+
+//  management API on 9000 
 const app = express()
 app.use(express.json())
 
-// Mount registration routes
 app.use('/', registerRoutes)
 
-// Health check for the LB itself
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }))
 
 const API_PORT = config.api.port || 9000
@@ -101,7 +101,7 @@ app.listen(API_PORT, () => {
   console.log('\n[boot] Load balancer ready!\n')
 })
 
-// ── Graceful shutdown ─────────────────────────────────────────────────────────
+// Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('\n[shutdown] SIGTERM received, shutting down gracefully...')
   proxyServer.close(() => {
