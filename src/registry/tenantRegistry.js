@@ -73,6 +73,8 @@ export function recordSuccess(domain, url) {
   const server = tenant?.servers.find(s => s.url === url)
   if (!server) return
 
+  server.circuit.failures = 0 
+
   if (server.circuit.state === 'HALF') {
     server.circuit.state = 'CLOSED'
     server.circuit.failures = 0
