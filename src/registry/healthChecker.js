@@ -1,68 +1,61 @@
-
 import http from 'http'
+import https from 'https'
 import { getAllTenants, markServerHealth } from './tenantRegistry.js'
 
 const inFlight = new Set()
+const intervalMs = Number(process.env.HEALTH_CHECK_INTERVAL_MS || 10000)
+const timeoutMs = Number(process.env.HEALTH_CHECK_TIMEOUT_MS || 3000)
 
-function checkServer(domain, server, timeoutMs, healthPath) {
-  const key = `${domain}::${server.url}`
-
+function checkServer(domain, server) {
+  const key = `${domain}::${server.id}`
   if (inFlight.has(key)) return Promise.resolve()
   inFlight.add(key)
 
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     let targetUrl
-
     try {
-      targetUrl = new URL(healthPath, server.url).toString()
+      targetUrl = new URL(server.healthPath || '/health', server.url)
     } catch {
-      markServerHealth(domain, server.url, false)
+      markServerHealth(domain, server.id, false)
       inFlight.delete(key)
       return resolve()
     }
 
-    const req = http.get(targetUrl, (res) => {
-      // Accept anything below 500 — so fake servers returning 404 on /health still count as UP
-      const isHealthy = res.statusCode < 500
-      markServerHealth(domain, server.url, isHealthy)
-      res.resume()
+    const transport = targetUrl.protocol === 'https:' ? https : http
+    const request = transport.get(targetUrl, response => {
+      const healthy = response.statusCode >= 200 && response.statusCode < 400
+      markServerHealth(domain, server.id, healthy)
+      response.resume()
       inFlight.delete(key)
       resolve()
     })
 
-    req.setTimeout(timeoutMs, () => {
-      req.destroy()
-      markServerHealth(domain, server.url, false)
+    request.setTimeout(timeoutMs, () => {
+      request.destroy()
+      markServerHealth(domain, server.id, false)
       inFlight.delete(key)
       resolve()
     })
 
-    req.on('error', () => {
-      markServerHealth(domain, server.url, false)
+    request.on('error', () => {
+      markServerHealth(domain, server.id, false)
       inFlight.delete(key)
       resolve()
     })
   })
 }
 
-export function startHealthChecks(config) {
-  const { intervalMs, timeoutMs, path: healthPath } = config.healthCheck
-
-  console.log(`[health] Checks every ${intervalMs}ms → ${healthPath}`)
+export function startHealthChecks() {
+  console.log(`[health] Checks every ${intervalMs}ms`)
 
   const runChecks = async () => {
-    const tenants = getAllTenants()
     const checks = []
-
-    for (const tenant of tenants) {
-      for (const server of tenant.servers) {
-        checks.push(checkServer(tenant.domain, server, timeoutMs, healthPath))
-      }
+    for (const tenant of getAllTenants()) {
+      for (const server of tenant.servers) checks.push(checkServer(tenant.domain, server))
     }
-
     await Promise.all(checks)
     setTimeout(runChecks, intervalMs)
   }
 
-  setTimeout(runChecks, intervalMs)
+  runChecks()
 }
