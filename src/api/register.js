@@ -1,208 +1,189 @@
+import 'dotenv/config'
 import express from 'express'
 import registry from '../registry/tenantRegistry.js'
 import { saveTenants } from '../registry/persistence.js'
 
+const ADMIN_SECRET = process.env.SMARTLB_ADMIN_SECRET
+
 const router = express.Router()
 
-router.post('/register', (req, res) => {
-  const { domain, url, strategy } = req.body
+function requireAdmin(req, res, next) {
+  if (!ADMIN_SECRET) {
+    console.error('[auth] SMARTLB_ADMIN_SECRET is not configured')
+
+    return res.status(500).json({
+      error: 'Admin authentication is not configured'
+    })
+  }
+
+  const authorization = req.headers.authorization || ''
+
+  const [scheme, token] = authorization.split(' ')
+
+  if (scheme !== 'Bearer' || token !== ADMIN_SECRET) {
+    return res.status(401).json({
+      error: 'Unauthorized'
+    })
+  }
+
+  next()
+}
+
+router.use(requireAdmin)
+
+function normalizeDomain(domain) {
+  return String(domain || '').trim().toLowerCase().replace(/:\d+$/, '')
+}
+
+function publicServer(server) {
+  return {
+    id: server.id,
+    url: server.url,
+    healthPath: server.healthPath,
+    healthy: server.healthy,
+    draining: server.draining,
+    connections: server.connections,
+    circuit: {
+      state: server.circuit.state,
+      failures: server.circuit.failures
+    },
+    avgResponseTime: server.avgResponseTime,
+    p95: server.p95,
+    totalRequests: server.totalRequests,
+    endpointStats: server.endpointStats
+  }
+}
+
+router.post('/tenants', (req, res) => {
+  const domain = normalizeDomain(req.body.domain)
+  const strategy = req.body.strategy || 'adaptive'
+
+  if (!domain) return res.status(400).json({ error: 'Missing domain' })
+
+  try {
+    const tenant = registry.addTenant(domain, strategy)
+    saveTenants(registry.getAllTenants())
+    return res.status(201).json({ success: true, tenant })
+  } catch (err) {
+    return res.status(err.message.includes('already exists') ? 409 : 400).json({ error: err.message })
+  }
+})
+
+router.get('/tenants', (req, res) => {
+  res.json({ tenants: registry.getAllTenants().map(t => ({
+    domain: t.domain,
+    strategy: t.strategy,
+    servers: t.servers.map(publicServer)
+  })) })
+})
+
+router.get('/tenants/:domain', (req, res) => {
+  const tenant = registry.getTenant(normalizeDomain(req.params.domain))
+  if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+
+  res.json({
+    domain: tenant.domain,
+    strategy: tenant.strategy,
+    servers: tenant.servers.map(publicServer)
+  })
+})
+
+router.patch('/tenants/:domain', (req, res) => {
+  const domain = normalizeDomain(req.params.domain)
+  const tenant = registry.getTenant(domain)
+  if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+
+  if (req.body.strategy !== undefined) {
+    try {
+      registry.setStrategy(domain, req.body.strategy)
+    } catch (err) {
+      return res.status(400).json({ error: err.message, valid: registry.validStrategies })
+    }
+  }
+
+  saveTenants(registry.getAllTenants())
+  res.json({ success: true, tenant: registry.getTenant(domain) })
+})
+
+router.delete('/tenants/:domain', (req, res) => {
+  const domain = normalizeDomain(req.params.domain)
+  const tenant = registry.getTenant(domain)
+  if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+  if (tenant.servers.some(s => s.connections > 0)) {
+    return res.status(409).json({ error: 'Tenant has active requests; drain servers first' })
+  }
+
+  registry.deleteTenant(domain)
+  saveTenants(registry.getAllTenants())
+  res.json({ success: true })
+})
+
+router.post('/servers', (req, res) => {
+  const domain = normalizeDomain(req.body.domain)
+  const url = String(req.body.url || '').trim()
 
   if (!domain || !url) {
-    return res.status(400).json({
-      error: 'Missing required fields',
-      required: ['domain', 'url'],
-      example: { domain: 'amazon.com', url: 'http://10.0.0.4:8080', strategy: 'round-robin' }
-    })
+    return res.status(400).json({ error: 'domain and url are required' })
   }
 
   try { new URL(url) } catch {
     return res.status(400).json({ error: `Invalid URL: ${url}` })
   }
 
-  if (strategy && !registry.getTenant(domain)) {
-    registry.addTenant(domain, strategy)
+  if (!registry.getTenant(domain)) {
+    return res.status(404).json({ error: `Tenant not found: ${domain}` })
   }
 
-  registry.registerServer(domain, url)
-  saveTenants(registry.getAllTenants())
-
-  res.status(201).json({
-    success: true,
-    message: `Registered ${url} under ${domain}`,
-    tenant:  registry.getTenant(domain)
-  })
-})
-
-router.delete('/register', (req, res) => {
-  const { domain, url } = req.body
-
-  if (!domain || !url) {
-    return res.status(400).json({ error: 'Missing domain or url' })
+  try {
+    const server = registry.registerServer(domain, url, { healthPath: req.body.healthPath })
+    saveTenants(registry.getAllTenants())
+    return res.status(201).json({ success: true, server: publicServer(server) })
+  } catch (err) {
+    return res.status(err.message.includes('already registered') ? 409 : 400).json({ error: err.message })
   }
-
-  registry.deregisterServer(domain, url)
-  saveTenants(registry.getAllTenants())
-
-  res.json({ success: true, message: `Removed ${url} from ${domain}` })
-})
-
-router.post('/drain', (req, res) => {
-  const { domain, url } = req.body
-
-  if (!domain || !url) {
-    return res.status(400).json({ error: 'Missing domain or url' })
-  }
-
-  const success = registry.drainServer(domain, url)
-
-  if (!success) {
-    return res.status(404).json({ error: `Server not found: ${url} under ${domain}` })
-  }
-
-  res.json({
-    success: true,
-    message: `Server ${url} is now draining — will be removed when active requests finish`
-  })
 })
 
 router.get('/servers', (req, res) => {
-  const tenants = registry.getAllTenants().map(tenant => ({
-    domain:   tenant.domain,
-    strategy: tenant.strategy,
-    rules:    tenant.rules,
-
-    servers: tenant.servers.map(s => ({
-      url:         s.url,
-      healthy:     s.healthy,
-      draining:    s.draining,
-      connections: s.connections,
-
-      circuit: {
-        state: s.circuit?.state || 'CLOSED',
-        failures: s.circuit?.failures || 0
-      },
-
-      avgResponseTime: s.avgResponseTime,
-      p95: s.p95,
-
-      totalRequests: s.totalRequests,
-
-      endpointStats: s.endpointStats
-    }))
-  }))
-
-  res.json({ tenants })
+  const servers = []
+  for (const tenant of registry.getAllTenants()) {
+    for (const server of tenant.servers) {
+      servers.push({ domain: tenant.domain, ...publicServer(server) })
+    }
+  }
+  res.json({ servers })
 })
 
-router.post('/tenants', (req, res) => {
-  const { domain, strategy } = req.body
-
-  if (!domain) {
-    return res.status(400).json({ error: 'Missing domain' })
+router.get('/servers/:id', (req, res) => {
+  for (const tenant of registry.getAllTenants()) {
+    const server = tenant.servers.find(s => s.id === req.params.id)
+    if (server) return res.json({ domain: tenant.domain, ...publicServer(server) })
   }
-
-  registry.addTenant(domain, strategy || 'round-robin')
-  saveTenants(registry.getAllTenants())
-
-  res.status(201).json({
-    success: true,
-    message: `Tenant created: ${domain}`,
-    tenant:  registry.getTenant(domain)
-  })
+  res.status(404).json({ error: 'Server not found' })
 })
 
-
-router.patch('/tenants/:domain/strategy', (req, res) => {
-  const { domain } = req.params
-  const { strategy } = req.body
-
-  const validStrategies = ['round-robin', 'least-connections', 'ip-hash', 'fastest-response', 'weighted-response' , 'adaptive']
-
-  if (!strategy || !validStrategies.includes(strategy)) {
-    return res.status(400).json({
-      error: 'Invalid strategy',
-      valid: validStrategies
-    })
+router.post('/servers/:id/drain', (req, res) => {
+  for (const tenant of registry.getAllTenants()) {
+    const server = tenant.servers.find(s => s.id === req.params.id)
+    if (server) {
+      registry.drainServer(tenant.domain, server.id)
+      saveTenants(registry.getAllTenants())
+      return res.json({ success: true, message: 'Server draining', serverId: server.id })
+    }
   }
-
-  if (!registry.getTenant(domain)) {
-    return res.status(404).json({ error: `Tenant not found: ${domain}` })
-  }
-
-  registry.setStrategy(domain, strategy)
-  saveTenants(registry.getAllTenants())
-
-  res.json({
-    success:  true,
-    message:  `Strategy updated for ${domain} → ${strategy}`,
-    tenant:   registry.getTenant(domain)
-  })
+  res.status(404).json({ error: 'Server not found' })
 })
 
-
-router.post('/tenants/:domain/rules', (req, res) => {
-  const { domain } = req.params
-  const rule = req.body
-
-  if (!registry.getTenant(domain)) {
-    return res.status(404).json({ error: `Tenant not found: ${domain}` })
+router.delete('/servers/:id', (req, res) => {
+  for (const tenant of registry.getAllTenants()) {
+    const server = tenant.servers.find(s => s.id === req.params.id)
+    if (server) {
+      const removed = registry.deregisterServer(tenant.domain, server.id)
+      if (!removed) return res.status(409).json({ error: 'Server has active requests; drain it first' })
+      saveTenants(registry.getAllTenants())
+      return res.json({ success: true })
+    }
   }
-
-  if (!rule.match || !rule.target?.servers) {
-    return res.status(400).json({
-      error: 'Invalid rule format',
-      example: {
-        description: 'POST /checkout → premium servers',
-        match:  { path: '/checkout', method: 'POST' },
-        target: { servers: ['http://localhost:3001'], strategy: 'least-connections' }
-      }
-    })
-  }
-
-  registry.addRule(domain, rule)
-
-  res.status(201).json({
-    success: true,
-    message: `Rule added for ${domain}`,
-    rules:   registry.getRules(domain)
-  })
-})
-
-
-router.delete('/tenants/:domain/rules', (req, res) => {
-  const { domain } = req.params
-  const tenant = registry.getTenant(domain)
-
-  if (!tenant) {
-    return res.status(404).json({ error: `Tenant not found: ${domain}` })
-  }
-
-  tenant.rules = []
-  res.json({ success: true, message: `All rules cleared for ${domain}` })
+  res.status(404).json({ error: 'Server not found' })
 })
 
 export default router
-
-
-
-
-
-
-/**
-
- * Management API — all routes for controlling SmartLB.
- *
- * Server lifecycle:
- *   POST   /register          — register a server
- *   DELETE /register          — hard remove a server immediately
- *   POST   /drain             — graceful remove (finish active requests first)
- *
- * Tenant management:
- *   POST   /tenants           — create a tenant
- *   GET    /servers           — list all tenants + servers + stats
- *   PATCH  /tenants/:domain/strategy — change routing strategy live
- *
- * Routing rules:
- *   POST   /tenants/:domain/rules    — add a routing rule
- *   DELETE /tenants/:domain/rules    — clear all rules for a tenant
- */

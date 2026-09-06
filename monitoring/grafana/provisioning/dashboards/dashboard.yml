@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: SmartLB
+    orgId: 1
+    folder: SmartLB
+    type: file
+    disableDeletion: false
+    editable: true
+
+    options:
+      path: /etc/grafana/provisioning/dashboards

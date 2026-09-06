@@ -1,14 +1,23 @@
 {
   "tenants": [
     {
-      "domain": "localhost",
-      "strategy": "round-robin",
+      "domain": "api.example.com",
+      "strategy": "adaptive",
       "servers": [
         {
-          "url": "http://localhost:5000"
+          "id": "c6b09a21-0400-44af-84f5-d897cfc33488",
+          "url": "http://localhost:3001",
+          "healthPath": "/health"
         },
         {
-          "url": "http://localhost:5001"
+          "id": "62a447ee-8002-42c4-bdd3-9acb886d8775",
+          "url": "http://localhost:3002",
+          "healthPath": "/health"
+        },
+        {
+          "id": "f6396e55-dedf-4abd-acb2-0c42d63d099a",
+          "url": "http://localhost:3003",
+          "healthPath": "/health"
         }
       ]
     }
